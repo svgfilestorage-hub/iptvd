@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>TV-Friendly IPTV Player</title>
+<style>
+body { margin:0; font-family:sans-serif; background:#111; color:white; padding:20px; }
+h2 { margin-bottom:10px; font-size:20px; }
+video { width:100%; max-height:40vh; background:black; border-radius:8px; margin-bottom:10px; }
+#epgInfo { margin:5px 0 10px; font-size:16px; color:#ccc; }
+#channelList { display:grid; grid-template-columns:repeat(6,1fr); gap:6px; }
+.channel-item { background:#1c1c1c; padding:6px; border-radius:6px; text-align:center; cursor:pointer; font-size:12px; display:flex; justify-content:space-between; align-items:center; transition:0.2s; outline:none; }
+.channel-item:hover, .channel-item.active { transform:scale(1.05); box-shadow:0 0 10px #007bff; }
+#search { width:100%; padding:10px; margin-bottom:10px; border-radius:6px; border:none; font-size:14px; }
+button { padding:8px 14px; border:none; border-radius:6px; background:#007bff; color:white; cursor:pointer; font-size:14px; margin-right:5px; outline:none; }
+button:focus, button:hover { background:#0056b3; box-shadow:0 0 10px #007bff; }
+#pagination button { padding:6px 10px; margin:0 3px; border:none; border-radius:5px; background:#007bff; color:white; cursor:pointer; font-size:12px; }
+#pagination button.active-page { background:#FFD700; color:#111; font-weight:bold; }
+</style>
+</head>
+<body>
+
+<h2 id="channelTitle">Select a Channel</h2>
+<video id="video" controls autoplay></video>
+<div id="epgInfo">Now Playing: None</div>
+
+<div style="margin-bottom:10px;">
+  <button id="fullscreenBtn" tabindex="0">Fullscreen</button>
+  <button id="allBtn" tabindex="0">All Channel</button>
+  <button id="indianBtn" tabindex="0">Indian</button>
+  <button id="favBtn" tabindex="0">Favorites</button>
+  <button id="activeBtn" tabindex="0">Active</button>
+</div>
+
+<input type="text" id="search" placeholder="Search Channel..." tabindex="0">
+<div id="channelList"></div>
+<div id="pagination" style="margin-top:10px; text-align:center;"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<script>
+const playlists = [
+    "https://raw.githubusercontent.com/sm-monirulislam/RoarZone-Auto-Update-playlist/refs/heads/main/RoarZone.m3u",
+    "https://raw.githubusercontent.com/hanifrgt/Bdix/refs/heads/main/Paid.m3u",
+    "https://raw.githubusercontent.com/TarunG78/livetv/refs/heads/main/lista_varios.m3u",
+    "https://raw.githubusercontent.com/arijitreza/web/refs/heads/main/reza.m3u"
+];
+
+const video = document.getElementById("video");
+const channelList = document.getElementById("channelList");
+const searchInput = document.getElementById("search");
+const fullscreenBtn = document.getElementById("fullscreenBtn");
+const allBtn = document.getElementById("allBtn");
+const indianBtn = document.getElementById("indianBtn");
+const favBtn = document.getElementById("favBtn");
+const activeBtn = document.getElementById("activeBtn");
+const paginationDiv = document.getElementById("pagination");
+
+let channels = [];
+let filteredChannels = [];
+let activeIndex = 0;
+let hls;
+let workingChannels = []; // শুধুমাত্র ওয়ার্কিং চ্যানেল
+
+// Pagination
+let currentPage = 1;
+const itemsPerRow = 6;
+const rowsPerPage = 6;
+let itemsPerPage = itemsPerRow * rowsPerPage;
+
+// Favorites
+const FAVORITES_KEY = "iptv_favorites";
+let favorites = JSON.parse(localStorage.getItem(FAVORITES_KEY)) || [];
+
+// Control buttons
+const controlButtons = [fullscreenBtn, allBtn, indianBtn, favBtn, activeBtn];
+
+// Fetch playlist
+async function fetchPlaylist(url){
+    const res = await fetch(url);
+    const text = await res.text();
+    const list = [];
+    const lines = text.split("\n");
+    for(let i=0;i<lines.length;i++){
+        if(lines[i].startsWith("#EXTINF")){
+            const name = lines[i].split(",")[1].trim();
+            const chUrl = lines[i+1].trim();
+            list.push({name,chUrl});
+        }
+    }
+    return list;
+}
+
+// Load playlists
+async function loadAllPlaylists(){
+    for(const pl of playlists){
+        const list = await fetchPlaylist(pl);
+        channels = channels.concat(list);
+    }
+
+    filteredChannels = channels.filter(ch => favorites.includes(ch.name));
+
+    const enter10 = channels.find(ch => ch.name.toUpperCase() === "ENTER10 BANGLA");
+    if(enter10 && !filteredChannels.includes(enter10)) filteredChannels.unshift(enter10);
+
+    currentPage = 1;
+    activeIndex = filteredChannels.findIndex(ch => ch.name.toUpperCase() === "ENTER10 BANGLA");
+    if(activeIndex < 0) activeIndex = 0;
+
+    playChannel(filteredChannels[activeIndex], activeIndex, false);
+    renderChannels(filteredChannels);
+
+    channels.forEach(ch => testChannel(ch));
+}
+
+// চ্যানেল টেস্ট
+function testChannel(ch){
+    if(Hls.isSupported()){
+        const testHls = new Hls();
+        const testVid = document.createElement("video");
+        testHls.loadSource(ch.chUrl);
+        testHls.attachMedia(testVid);
+
+        let loaded=false;
+        const timeout = setTimeout(()=>{
+            if(!loaded) testHls.destroy();
+        },120000); // ⏱ 2 মিনিট
+
+        testHls.on(Hls.Events.MANIFEST_PARSED, ()=>{
+            if(!loaded){
+                loaded=true;
+                workingChannels.push(ch);
+                testHls.destroy();
+                updateChannelColors(ch);
+            }
+        });
+
+        testHls.on(Hls.Events.ERROR, ()=>{
+            if(!loaded){
+                loaded=true;
+                testHls.destroy();
+            }
+        });
+    } else {
+        const vid=document.createElement("video");
+        vid.src=ch.chUrl;
+        let loaded=false;
+        const timeout=setTimeout(()=>{
+            if(!loaded) {}
+        },120000); // ⏱ 2 মিনিট
+        vid.oncanplay=()=>{
+            if(!loaded){
+                loaded=true;
+                workingChannels.push(ch);
+                updateChannelColors(ch);
+            }
+        };
+        vid.onerror=()=>{ loaded=true; };
+        vid.load();
+    }
+}
+
+// চ্যানেল ব্যাকগ্রাউন্ড আপডেট
+function updateChannelColors(ch){
+    const items = document.querySelectorAll("#channelList .channel-item");
+    items.forEach(div=>{
+        if(div.querySelector("span").innerText===ch.name){
+            div.style.background="#0a6"; 
+        }
+    });
+}
+
+// Render channels
+function renderChannels(list, skipFocus=false){
+    channelList.innerHTML = "";
+    itemsPerPage = itemsPerRow * rowsPerPage;
+    totalPages = Math.ceil(list.length/itemsPerPage);
+    const start = (currentPage-1)*itemsPerPage;
+    const end = start+itemsPerPage;
+    const pageItems = list.slice(start,end);
+
+    pageItems.forEach((ch,i)=>{
+        const div = document.createElement("div");
+        div.className = "channel-item";
+        div.tabIndex=0;
+
+        const nameSpan = document.createElement("span");
+        nameSpan.innerText = ch.name;
+        div.appendChild(nameSpan);
+
+        const favBtn = document.createElement("button");
+        favBtn.innerText = favorites.includes(ch.name)?"★":"☆";
+        favBtn.style.marginLeft="4px";
+        favBtn.style.fontSize="14px";
+        favBtn.style.background="transparent";
+        favBtn.style.color="#FFD700";
+        favBtn.style.border="none";
+        favBtn.style.cursor="pointer";
+        favBtn.onclick = e=>{
+            e.stopPropagation();
+            if(favorites.includes(ch.name)) favorites=favorites.filter(f=>f!==ch.name), favBtn.innerText="☆";
+            else favorites.push(ch.name), favBtn.innerText="★";
+            localStorage.setItem(FAVORITES_KEY, JSON.stringify(favorites));
+        };
+        div.appendChild(favBtn);
+
+        div.onclick=()=>playChannel(ch,i+start,true);
+        div.onfocus=()=>{activeIndex=i+start; if(!skipFocus) focusChannel(activeIndex);}
+
+        if(workingChannels.find(w=>w.name===ch.name)) div.style.background="#0a6";
+
+        channelList.appendChild(div);
+    });
+
+    paginationDiv.innerHTML="";
+    for(let i=1;i<=totalPages;i++){
+        const btn=document.createElement("button");
+        btn.innerText=i;
+        btn.className=(i===currentPage)?"active-page":"";
+        btn.onclick=()=>{currentPage=i; renderChannels(filteredChannels);}
+        paginationDiv.appendChild(btn);
+    }
+
+    if(!skipFocus){
+        const localIndex = activeIndex - (currentPage-1)*itemsPerPage;
+        const items = document.querySelectorAll("#channelList .channel-item");
+        if(items[localIndex]) items[localIndex].focus();
+    }
+}
+
+// Play channel
+function playChannel(ch,index,autoFocus=true){
+    activeIndex=index;
+    document.getElementById("channelTitle").innerText=ch.name;
+    document.getElementById("epgInfo").innerText="Now Playing: "+ch.name;
+    if(hls) hls.destroy();
+    if(Hls.isSupported()){hls=new Hls(); hls.loadSource(ch.chUrl); hls.attachMedia(video);}
+    else if(video.canPlayType('application/vnd.apple.mpegurl')) video.src=ch.chUrl;
+
+    if(autoFocus){
+        video.play().catch(()=>{});
+        if(!document.fullscreenElement){
+            video.requestFullscreen?.().catch(()=>{});
+        }
+        fullscreenBtn.focus();
+    }
+}
+
+// Focus highlight
+function focusChannel(index){
+    const items=document.querySelectorAll("#channelList .channel-item");
+    items.forEach(el=>el.classList.remove("active"));
+    const localIndex = index - (currentPage-1)*itemsPerPage;
+    if(items[localIndex]) items[localIndex].classList.add("active");
+}
+
+// Search
+searchInput.addEventListener("input",function(){
+    const val=this.value.toLowerCase();
+    filteredChannels=channels.filter(ch=>ch.name.toLowerCase().includes(val));
+    currentPage=1;
+    renderChannels(filteredChannels, true);
+});
+
+// Fullscreen
+fullscreenBtn.addEventListener("click", ()=>{
+    if(!document.fullscreenElement){
+        video.requestFullscreen?.().then(()=>video.play()).catch(()=>video.play());
+    } else {
+        document.exitFullscreen?.().then(()=>video.play()).catch(()=>video.play());
+    }
+});
+
+// Filters
+allBtn.addEventListener("click", ()=>{filteredChannels=channels.slice(); currentPage=1; activeIndex=0; renderChannels(filteredChannels);});
+indianBtn.addEventListener("click", ()=>{
+    const kw=["enter10 bangla","enterr 10","star jalsha","zee bangla"];
+    filteredChannels=channels.filter(ch=>kw.some(k=>ch.name.toLowerCase().includes(k)));
+    currentPage=1; activeIndex=0; renderChannels(filteredChannels);
+});
+favBtn.addEventListener("click", ()=>{filteredChannels=channels.filter(ch=>favorites.includes(ch.name)); currentPage=1; activeIndex=0; renderChannels(filteredChannels);});
+activeBtn.addEventListener("click", ()=>{filteredChannels=workingChannels.slice(); currentPage=1; activeIndex=0; renderChannels(filteredChannels);});
+
+// Keyboard navigation
+document.addEventListener("keydown",function(e){
+    const channelItems = document.querySelectorAll("#channelList .channel-item");
+    const paginationItems = document.querySelectorAll("#pagination button");
+    const items = [...controlButtons, ...channelItems, ...paginationItems];
+    let idx = items.indexOf(document.activeElement);
+    if(idx<0) idx=0;
+
+    if(e.key==="ArrowRight"){ e.preventDefault(); if(idx<items.length-1) items[idx+1].focus(); }
+    else if(e.key==="ArrowLeft"){ e.preventDefault(); if(idx>0) items[idx-1].focus(); }
+    else if(e.key==="ArrowDown"){ e.preventDefault();
+        if(idx>=controlButtons.length && idx<controlButtons.length+channelItems.length){
+            let rel = idx - controlButtons.length;
+            let next = rel + itemsPerRow;
+            if(next >= channelItems.length) next = channelItems.length-1;
+            items[controlButtons.length + next].focus();
+        } else if(idx<controlButtons.length){ items[controlButtons.length].focus(); }
+    }
+    else if(e.key==="ArrowUp"){ e.preventDefault();
+        if(idx>=controlButtons.length && idx<controlButtons.length+channelItems.length){
+            let rel = idx - controlButtons.length;
+            let prev = rel - itemsPerRow;
+            if(prev<0) items[controlButtons.length].focus();
+            else items[controlButtons.length + prev].focus();
+        } else if(idx<controlButtons.length){ items[0].focus(); }
+    }
+    else if(e.key==="Enter"){
+        const active=document.activeElement;
+        if(active.tagName==="BUTTON") active.click();
+        else if(active.classList.contains("channel-item")) active.click();
+    }
+});
+
+loadAllPlaylists();
+</script>
+
+</body>
+</html>
